@@ -67,32 +67,55 @@ func RunAnalysis(ctx context.Context, schema, docs string) ([]ComplexityAnalysis
 			continue
 		}
 
-		if err := validator.ValidateWithRules(schemaDoc, queryDoc, rules.NewDefaultRules()); err != nil {
-			slog.Warn("Validating query", "file", match, "error", err)
+		analysis, err := AnalyseDocument(ctx, schemaDoc, queryDoc)
+		if err != nil {
+			slog.Warn("Analysing document", "file", match, "error", err)
 			continue
 		}
 
-		s := graphql.ExecutableSchemaMock{
-			ComplexityFunc: func(ctx context.Context, typeName string, fieldName string, childComplexity int, args map[string]any) (int, bool) {
-				return childComplexity + 1, true
-			},
-			ExecFunc:   func(ctx context.Context) graphql.ResponseHandler { return nil },
-			SchemaFunc: func() *ast.Schema { return schemaDoc },
-		}
-
-		for _, op := range queryDoc.Operations {
-			flatOp := flatten(queryDoc, op)
-
+		for _, res := range analysis {
 			results = append(results, ComplexityAnalysis{
 				Path:                match,
-				OperationName:       op.Name,
-				Complexity:          complexity.Calculate(ctx, &s, op, nil),
-				FlattenedComplexity: complexity.Calculate(ctx, &s, flatOp, nil),
+				OperationName:       res.OperationName,
+				Complexity:          res.Complexity,
+				FlattenedComplexity: res.FlattenedComplexity,
 			})
 		}
 	}
 
 	return results, nil
+}
+
+type DocumentAnalysis struct {
+	OperationName       string
+	Complexity          int
+	FlattenedComplexity int
+}
+
+func AnalyseDocument(ctx context.Context, schemaDoc *ast.Schema, queryDoc *ast.QueryDocument) ([]DocumentAnalysis, error) {
+	if err := validator.ValidateWithRules(schemaDoc, queryDoc, rules.NewDefaultRules()); err != nil {
+		return nil, fmt.Errorf("validating query document: %w", err)
+	}
+
+	s := graphql.ExecutableSchemaMock{
+		ComplexityFunc: func(ctx context.Context, typeName string, fieldName string, childComplexity int, args map[string]any) (int, bool) {
+			return childComplexity + 1, true
+		},
+		ExecFunc:   func(ctx context.Context) graphql.ResponseHandler { return nil },
+		SchemaFunc: func() *ast.Schema { return schemaDoc },
+	}
+
+	var documentResults []DocumentAnalysis
+	for _, op := range queryDoc.Operations {
+		flatOp := flatten(queryDoc, op)
+
+		documentResults = append(documentResults, DocumentAnalysis{
+			OperationName:       op.Name,
+			Complexity:          complexity.Calculate(ctx, &s, op, nil),
+			FlattenedComplexity: complexity.Calculate(ctx, &s, flatOp, nil),
+		})
+	}
+	return documentResults, nil
 }
 
 // flatten will flatten the operation by inlining all fragments.
